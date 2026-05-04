@@ -132,3 +132,48 @@ def chat(messages: list[dict], model: str | None = None, temperature: float = 0.
 def get_token_summary() -> str:
     """返回当前会话的 token 消耗摘要。"""
     return token_usage.summary()
+
+
+def translate_problem_to_chinese(problem: dict) -> dict:
+    """将英文题目翻译成中文。
+
+    Args:
+        problem: 英文题目字典
+
+    Returns:
+        翻译后的中文题目字典
+    """
+    # 构建翻译提示
+    prompt = f"""请将以下 LeetCode 题目翻译成中文，保持格式完整：
+
+标题：{problem['title']}
+难度：{problem['difficulty']}
+标签：{', '.join(problem['tags'])}
+
+题目描述：
+{problem['description']}
+
+请翻译标题、难度、标签和题目描述。保持 Markdown 格式，确保示例和约束条件完整。"""
+
+    messages = [
+        {"role": "system", "content": "你是专业的算法题翻译员。请准确翻译 LeetCode 题目，保持技术术语准确，格式完整。"},
+        {"role": "user", "content": prompt}
+    ]
+
+    # 调用 MiMo API 进行翻译
+    response, tokens = chat(messages, temperature=0.3)
+
+    # 构建翻译后的题目
+    translated_problem = problem.copy()
+    translated_problem['title'] = f"[中文] {problem['title']}"
+    translated_problem['description'] = response
+    translated_problem['difficulty'] = {
+        'Easy': '简单',
+        'Medium': '中等',
+        'Hard': '困难'
+    }.get(problem['difficulty'], problem['difficulty'])
+
+    # 翻译标签
+    translated_problem['tags'] = [f"[中] {tag}" for tag in problem['tags']]
+
+    return translated_problem, tokens

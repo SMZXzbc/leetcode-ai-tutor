@@ -12,7 +12,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 from leetcode_api import get_problem
-from mimo_client import chat, get_token_summary
+from mimo_client import chat, get_token_summary, translate_problem_to_chinese
 
 # 历史记录存储
 HISTORY_FILE = os.path.join(os.path.dirname(__file__), 'data', 'history.txt')
@@ -47,16 +47,99 @@ def show_history():
                 print(line.strip())
     print("=" * 60)
 
+def read_multiline_code() -> str:
+    """读取多行代码输入。
+
+    支持两种模式：
+    1. 自动检测：当输入包含 { 或 } 时，继续读取下一行
+    2. 命令模式：使用 /code 进入，/end 结束
+
+    Returns:
+        完整的多行代码字符串
+    """
+    lines = []
+    brace_count = 0
+    in_code_mode = False
+
+    print("\n[代码输入] 请输入代码（输入 /end 结束，或直接输入空行结束）：")
+    print("[提示] 输入包含 { 或 } 时会自动继续读取下一行")
+
+    while True:
+        try:
+            if in_code_mode:
+                line = input("... ")
+            else:
+                line = input("> ")
+
+            # 结束命令
+            if line.strip().lower() == '/end':
+                if lines:
+                    break
+                else:
+                    print("[提示] 还没有输入任何代码")
+                    continue
+
+            # 空行处理
+            if not line.strip():
+                if lines and brace_count == 0:
+                    # 空行且大括号平衡，结束输入
+                    break
+                elif lines:
+                    # 空行但大括号不平衡，继续读取
+                    lines.append(line)
+                    continue
+                else:
+                    # 还没输入任何内容，继续等待
+                    continue
+
+            # 添加行到代码
+            lines.append(line)
+
+            # 统计大括号
+            brace_count += line.count('{') - line.count('}')
+
+            # 如果大括号不平衡，自动进入多行模式
+            if brace_count > 0:
+                in_code_mode = True
+            elif brace_count == 0 and in_code_mode:
+                # 大括号平衡，可以结束
+                # 但如果用户继续输入，还是继续读取
+                pass
+
+        except EOFError:
+            break
+        except KeyboardInterrupt:
+            print("\n[取消] 代码输入已取消")
+            return ""
+
+    return "\n".join(lines)
+
+
 def format_problem(problem: dict) -> str:
     """格式化题目显示"""
-    lines = [
-        "\n" + "=" * 60,
-        f"#{problem['number']}. {problem['title']}",
-        f"难度: {problem['difficulty']} | 标签: {', '.join(problem['tags'])}",
-        "=" * 60,
-        problem['description'],
-        "=" * 60,
-    ]
+    # 检测是否为中文题目
+    is_chinese = problem.get('difficulty') in ['简单', '中等', '困难']
+
+    if is_chinese:
+        lines = [
+            "\n" + "=" * 60,
+            f"#{problem['number']}. {problem['title']}",
+            f"难度: {problem['difficulty']} | 标签: {', '.join(problem['tags'])}",
+            "=" * 60,
+            problem['description'],
+            "=" * 60,
+            "[提示] 题目已翻译为中文",
+        ]
+    else:
+        lines = [
+            "\n" + "=" * 60,
+            f"#{problem['number']}. {problem['title']}",
+            f"难度: {problem['difficulty']} | 标签: {', '.join(problem['tags'])}",
+            "=" * 60,
+            problem['description'],
+            "=" * 60,
+            "[提示] 题目为英文，可输入 /translate 翻译为中文",
+        ]
     return "\n".join(lines)
 
 def get_ai_response(problem: dict, user_input: str, mode: str = "normal") -> tuple:
@@ -92,8 +175,10 @@ def main():
     print("\n" + "=" * 60)
     print("LeetCode AI Tutor")
     print("   输入题号开始刷题（如 1），或输入命令：")
-    print("   /history - 查看刷题记录")
-    print("   /quit    - 退出程序")
+    print("   /history   - 查看刷题记录")
+    print("   /quit      - 退出程序")
+    print("   /translate - 将题目翻译为中文（在刷题模式中使用）")
+    print("   /code      - 输入多行代码（在刷题模式中使用）")
     print("=" * 60)
     
     while True:
@@ -121,8 +206,23 @@ def main():
             
             # 获取题目
             print(f"\n[加载] 正在获取题目 #{problem_id}...")
-            problem = get_problem(problem_id)
-            
+
+            # 优先从中国站获取中文题目
+            problem = None
+            try:
+                print("[尝试] 优先从 leetcode.cn 获取中文题目...")
+                problem = get_problem(problem_id, use_cn=True)
+                print("[成功] 已获取中文题目")
+            except Exception as e:
+                print(f"[回退] 中国站获取失败: {e}")
+                print("[尝试] 从 leetcode.com 获取英文题目...")
+                try:
+                    problem = get_problem(problem_id, use_cn=False)
+                    print("[成功] 已获取英文题目")
+                except Exception as e2:
+                    print(f"[错误] 无法获取题目 #{problem_id}: {e2}")
+                    continue
+
             if not problem:
                 print(f"[错误] 无法获取题目 #{problem_id}，请检查题号是否正确")
                 continue
@@ -132,19 +232,19 @@ def main():
             
             # 交互式刷题循环
             session_tokens = 0
-            
+
             while True:
-                action = input("\n[输入] 输入你的思路/代码，或 /hint 要提示，/next 换题: ").strip()
-                
+                action = input("\n[输入] 输入你的思路/代码，或 /hint 要提示，/next 换题，/translate 翻译题目，/code 输入多行代码: ").strip()
+
                 if not action:
                     continue
-                
+
                 if action.lower() in ['/next', '/n']:
                     # 保存本次记录
                     save_history(str(problem_id), problem['title'], session_tokens)
                     print(f"\n[保存] 已保存记录，本次共消耗 {session_tokens} tokens")
                     break
-                
+
                 if action.lower() in ['/hint', '/h']:
                     print("\n[提示] 正在获取提示...")
                     response, tokens = get_ai_response(problem, "请给我一些提示", mode="hint")
@@ -152,14 +252,54 @@ def main():
                     session_tokens += tokens['total']
                     print(f"\n[Token] 本次: {tokens['total']}, 累计: {session_tokens}")
                     continue
-                
-                # 正常对话
+
+                # 翻译题目
+                if action.lower() in ['/translate', '/t']:
+                    # 检查是否已经是中文题目
+                    if problem.get('difficulty') in ['简单', '中等', '困难']:
+                        print("\n[提示] 题目已经是中文版本")
+                        continue
+
+                    print("\n[翻译] 正在将题目翻译为中文...")
+                    try:
+                        translated_problem, tokens = translate_problem_to_chinese(problem)
+                        problem = translated_problem  # 更新当前题目为翻译版本
+                        session_tokens += tokens['total']
+
+                        # 重新显示翻译后的题目
+                        print(format_problem(problem))
+                        print(f"\n[Token] 翻译消耗: {tokens['total']}, 累计: {session_tokens}")
+                    except Exception as e:
+                        print(f"\n[错误] 翻译失败: {e}")
+                    continue
+
+                # 多行代码输入
+                if action.lower() in ['/code', '/c']:
+                    print("\n[代码模式] 进入多行代码输入模式...")
+                    print("[提示] 输入 /end 结束代码输入，或直接输入空行结束（大括号平衡时）")
+                    code = read_multiline_code()
+
+                    if code.strip():
+                        print("\n[思考] AI 正在分析你的代码...")
+                        response, tokens = get_ai_response(problem, code, mode="normal")
+                        print(f"\n[AI 教练]:\n{response}")
+                        session_tokens += tokens['total']
+                        print(f"\n[Token] 本次: {tokens['total']}, 累计: {session_tokens}")
+                    else:
+                        print("[提示] 未输入任何代码")
+                    continue
+
+                # 正常对话（也支持自动检测多行代码）
+                if '{' in action or '}' in action:
+                    # 检测到大括号，提示用户可以使用多行模式
+                    print("\n[提示] 检测到大括号，如果需要输入多行代码，建议使用 /code 命令")
+
                 print("\n[思考] AI 正在思考...")
                 response, tokens = get_ai_response(problem, action, mode="normal")
                 print(f"\n[AI 教练]:\n{response}")
-                
+
                 session_tokens += tokens['total']
-                
+
                 print(f"\n[Token] 本次: {tokens['total']}, 累计: {session_tokens}")
         
         except KeyboardInterrupt:
